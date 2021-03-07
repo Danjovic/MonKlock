@@ -9,7 +9,11 @@
 
       Cistercian Monk's cypher digital clock.
 
-      Danjovic 2021
+      Danjovic 2021 - danjovic@hotmail.com
+
+      Versions:
+      0.1   07/03/2021 - Basic Release
+
 */
 
 //         _               _
@@ -63,13 +67,16 @@
 //   \__,_\___|_| |_|_||_|_|\__|_\___/_||_/__/
 //
 
-#define DEBUG 0
+#define DEBUG 1
 
+#define PULSE      4  // bit 4
 #define RELEASE    2  // bit 2
 #define PRESS      1  // bit 1
 #define LONGPRESS  0  // bit 0
 
-#define TIMELONGPRESS 125 // 125 x 4ms ~ 0.5 seconds
+#define THRESHOLD  10     // 10  x ~4ms = ~ 40ms
+#define TIMELONGPRESS 125 // 125 x ~4ms = ~ 0.5 seconds
+
 #define DISPLAY_TIMEOUT_3SECONDS 732
 
 enum {  DISPLY = 0,
@@ -125,7 +132,7 @@ uint8_t bmpTensC1 [10] = {0x00, 0x01, 0x04, 0x02, 0x02, 0x03, 0x00, 0x01, 0x04, 
 DateTime now;
 RTC_DS3231 rtc;
 
-uint8_t b1Ev, b2Ev;
+uint8_t modeButtonEvent, setButtonEvent;
 uint8_t setupMode = SETUP_HOUR;
 uint8_t displayMode = SHOW_TIME;
 uint16_t displayTimeout = DISPLAY_TIMEOUT_3SECONDS;
@@ -232,9 +239,12 @@ ISR (TIMER2_OVF_vect )  {  // Timer2 interrupt, every 128us
 //                     |_|   \_\/_/
 void setup() {
 
+
 #if DEBUG >0
+  // Serial port
   Serial.begin(9600);
 #endif
+
   // Display pins
   pinMode (_C1, OUTPUT);
   pinMode (_C2, OUTPUT);
@@ -254,15 +264,13 @@ void setup() {
   pinMode(BUTTON1, INPUT_PULLUP);
   pinMode(BUTTON2, INPUT_PULLUP);
 
-
+  // Initialize RTC
   if (rtc.begin()) {
     if (rtc.lostPower()) {
       operationMode = SETUP;
 #if DEBUG == 1
       Serial.println("RTC Lost Power");
 #endif
-      //  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-
     } else {
       operationMode = DISPLY;
 #if DEBUG == 1
@@ -276,11 +284,8 @@ void setup() {
 #endif
   }
 
-
-
-
-
-  TCCR2A  = (  (0 << COM2A1 ) | // Normal mode count up tp 255
+  // Setup Timer 2 interrupts (once at each 128us
+  TCCR2A  = (  (0 << COM2A1 ) | // Normal mode count up to 255
                (0 << COM2A0 ) |
                (0 << COM2B1 ) |
                (0 << COM2B0 ) |
@@ -296,17 +301,11 @@ void setup() {
                (0 << CS20   )
            ) ;
 
-
-  TCNT2 = 0;
-
+  TCNT2 = 0;                     // clear timer
   TIMSK2 = (  1 << 0   ) ;       // enable timer 2 interrupts
-
   sei();                         // enable global interrupts
 
-
-
-
-}
+} // setup()
 
 
 
@@ -316,17 +315,16 @@ void setup() {
 //   | |__/ _ \/ _ \ '_ \ |  | |
 //   |____\___/\___/ .__/ |  | |
 //                 |_|   \_\/_/
-
-
 void loop() {
   // wait main temporization function
   while ( !readyToGo) ;
   readyToGo = false;
 
   // process buttons
-  b1Ev = button1Event();
-  b2Ev = button2Event();
+  modeButtonEvent = button1Event();
+  setButtonEvent = button2Event();
 
+  // Get current time from RTC
   if ( rtc.begin() ) {
     now = rtc.now();
     hora = now.hour();
@@ -357,7 +355,6 @@ void loop() {
 //   |  _| || | ' \/ _|  _| / _ \ ' \(_-<
 //   |_|  \_,_|_||_\__|\__|_\___/_||_/__/
 //
-
 void  showBadFace (void) {
   if (rtc.begin()) {
     operationMode = DISPLY;
@@ -375,13 +372,13 @@ void  showBadFace (void) {
 } //showBadFace
 
 void showTime(void) {
-  if (b1Ev & (1 << LONGPRESS)) {
+  if (modeButtonEvent & (1 << LONGPRESS)) {
     operationMode = SETUP;
 #if DEBUG == 1
     Serial.println("enter setup mode");
 #endif
   }
-  if (b2Ev & (1 << RELEASE)  )  {
+  if (setButtonEvent & (1 << PULSE /*RELEASE*/ )  )  {
 #if DEBUG == 1
     Serial.println("Change display mode");
 #endif
@@ -426,19 +423,22 @@ void showTime(void) {
 void setupTime(void) {
 
   // check for end of setup
-  if (b1Ev & (1 << LONGPRESS) ) {
+  if (modeButtonEvent & (1 << LONGPRESS) ) {
     displayTimeout = DISPLAY_TIMEOUT_3SECONDS;
     operationMode = DISPLY;
-
+    modeButtonEvent = 0;
 #if DEBUG == 1
     Serial.println("return to display");
 #endif
   }
 
   //cycle between setup modes
-  if (b1Ev & (1 << PRESS) ) {
+  if (modeButtonEvent & (1 << PULSE /*PRESS*/ ) ) {
     setupMode++;
     if (setupMode > SETUP_YEAR ) setupMode = SETUP_HOUR;
+#if DEBUG == 1
+    Serial.println("Cycle setup mode");
+#endif    
   }
 
 
@@ -446,7 +446,7 @@ void setupTime(void) {
 
     case SETUP_HOUR:
       displayMode = SHOW_TIME; // prepare for return to  display mode
-      if (b2Ev & (1 << PRESS) ) {
+      if (setButtonEvent & (1 << PRESS) ) {
         hora++;
         if (hora > 24) hora = 0;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
@@ -456,7 +456,7 @@ void setupTime(void) {
 #endif
       }
 
-      if  (b2Ev & (1 << LONGPRESS) ) {  // shortcut to get easy to set hours
+      if  (setButtonEvent & (1 << LONGPRESS) ) {  // shortcut to get easy to set hours
         if (hora < 12)
           hora = 12;
         else
@@ -471,7 +471,7 @@ void setupTime(void) {
 
     case SETUP_MINUTE:
       displayMode = SHOW_TIME; // prepare for return to  display mode
-      if (b2Ev & (1 << PRESS) ) {
+      if (setButtonEvent & (1 << PRESS) ) {
         minuto++;
         if (minuto > 59) minuto = 0;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
@@ -481,7 +481,7 @@ void setupTime(void) {
 #endif
       }
 
-      if  (b2Ev & (1 << LONGPRESS) ) {  // shortcut to get easy to set minutes
+      if  (setButtonEvent & (1 << LONGPRESS) ) {  // shortcut to get easy to set minutes
         if (minuto < 30)
           minuto = 30;
         else
@@ -498,7 +498,7 @@ void setupTime(void) {
 
     case SETUP_DAY:
       displayMode = SHOW_DAY; // prepare for return to  display mode
-      if (b2Ev & (1 << PRESS) ) {
+      if (setButtonEvent & (1 << PRESS) ) {
         dia++;
         if (dia > 31) dia = 1;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
@@ -512,7 +512,7 @@ void setupTime(void) {
 
     case SETUP_MONTH:
       displayMode = SHOW_MONTH; // prepare for return to  display mode
-      if (b2Ev & (1 << PRESS) ) {
+      if (setButtonEvent & (1 << PRESS) ) {
         mes++;
         if (mes > 12) mes = 1;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
@@ -527,7 +527,7 @@ void setupTime(void) {
 
     case SETUP_YEAR:
       displayMode = SHOW_YEAR; // prepare for return to  display mode
-      if (b2Ev & (1 << PRESS) ) {
+      if (setButtonEvent & (1 << PRESS) ) {
         ano++;
         if (ano > 2099) ano = 2000;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
@@ -535,7 +535,7 @@ void setupTime(void) {
         Serial.print("ano="); Serial.println(ano);
 #endif
       }
-      if  (b2Ev & (1 << LONGPRESS) ) {
+      if  (setButtonEvent & (1 << LONGPRESS) ) {
         ano = 2021 ;
         rtc.adjust ( DateTime(ano, mes, dia, hora, minuto, 0) );
 #if DEBUG == 1
@@ -582,6 +582,7 @@ uint8_t button1Event(void) {
 
     case 2: // button release
       buttonEvent = (1 << RELEASE);
+      if ( (buttonCounter>THRESHOLD)  && (buttonCounter<TIMELONGPRESS ) )  buttonEvent = (1<< PULSE);      
       buttonCounter = 0;
       break;
 
@@ -627,6 +628,7 @@ uint8_t button2Event(void) {
 
     case 2: // button release
       buttonEvent = (1 << RELEASE);
+      if ( (buttonCounter>THRESHOLD)  && (buttonCounter<TIMELONGPRESS ) )  buttonEvent = (1<< PULSE);      
       buttonCounter = 0;
       break;
 
